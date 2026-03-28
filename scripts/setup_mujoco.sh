@@ -1,9 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Exit on error, and print commands
 set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
+
+if ! command -v sudo &> /dev/null; then
+  # in docker build sudo isn't avaiable, but its ok
+  echo "Warning: sudo could not be found, you may need to run this script with sudo"
+  function sudo { "$@"; }
+  export -f sudo
+fi
 
 # MuJoCo Warp version to install -- the repo is missing version tags and branches
 # Arbitrarily chosen from mainline at the time we've ~tested against
@@ -35,7 +42,7 @@ while [[ $# -gt 0 ]]; do
       echo "  # Setup without GPU acceleration (CPU-only)"
       echo "  $0 --no-warp"
       echo ""
-      echo "Note: GPU acceleration requires NVIDIA driver >= 550.54.14"
+      echo "Note: GPU acceleration requires NVIDIA driver >= 555.58.02"
       exit 0
       ;;
     *)
@@ -61,10 +68,31 @@ WARP_SENTINEL_FILE=${WORKSPACE_DIR}/.env_setup_finished_$CONDA_ENV_NAME_warp
 mkdir -p $WORKSPACE_DIR
 
 if [[ ! -f $SENTINEL_FILE ]]; then
+  # Detect OS and architecture
+  OS_NAME="$(uname -s)"
+  ARCH_NAME="$(uname -m)"
+
   # Install miniconda (reuse existing logic)
   if [[ ! -d $CONDA_ROOT ]]; then
     mkdir -p $CONDA_ROOT
-    curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o $CONDA_ROOT/miniconda.sh
+
+    # Decide installer name based on OS/arch
+    if [[ "$OS_NAME" == "Linux" ]]; then
+      MINICONDA_INSTALLER="Miniconda3-latest-Linux-x86_64.sh"
+    elif [[ "$OS_NAME" == "Darwin" ]]; then
+      if [[ "$ARCH_NAME" == "arm64" ]]; then
+        # Apple Silicon
+        MINICONDA_INSTALLER="Miniconda3-latest-MacOSX-arm64.sh"
+      else
+        # Intel Mac
+        MINICONDA_INSTALLER="Miniconda3-latest-MacOSX-x86_64.sh"
+      fi
+    else
+      echo "Unsupported OS: $OS_NAME"
+      exit 1
+    fi
+
+    curl "https://repo.anaconda.com/miniconda/${MINICONDA_INSTALLER}" -o "$CONDA_ROOT/miniconda.sh"
     bash $CONDA_ROOT/miniconda.sh -b -u -p $CONDA_ROOT
     rm $CONDA_ROOT/miniconda.sh
   fi
@@ -85,8 +113,10 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   # sudo apt-get update
   # sudo apt-get install -y libgl1-mesa-dev libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev
 
-  # Install libstdcxx-ng to fix potential GLIBCXX issues
-  conda install -c conda-forge -y libstdcxx-ng
+  # Install libstdcxx-ng to fix potential GLIBCXX issues (Linux only)
+  if [[ "$OS_NAME" == "Linux" ]]; then
+    conda install -c conda-forge -y libstdcxx-ng
+  fi
 
   # Install ffmpeg for video encoding (consistent with other envs)
   conda install -c conda-forge -y ffmpeg
@@ -106,8 +136,17 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   #pip install numpy scipy matplotlib
 
   # Install Holosoma packages
+  echo "Installing Holosoma packages"
   pip install -U pip
-  pip install -e $ROOT_DIR/src/holosoma[unitree,booster]
+  if [[ "$OS_NAME" == "Linux" ]]; then
+    pip install -e "$ROOT_DIR/src/holosoma[unitree, booster]"
+  elif [[ "$OS_NAME" == "Darwin" ]]; then
+    echo "Warning: only unitree support for osx"
+    pip install -e "$ROOT_DIR/src/holosoma[unitree]"
+  else
+    echo "Unsupported OS: $OS_NAME"
+    exit 1
+  fi
 
   # Validate MuJoCo installation
   echo "Validating MuJoCo installation..."
@@ -183,7 +222,7 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
   source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
 
   # Check NVIDIA driver version (required for CUDA 12.4+)
-  MIN_DRIVER_VERSION="550.54.14"
+  MIN_DRIVER_VERSION="555.58.02"
   DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1)
 
   # Check if driver exists and meets minimum version
@@ -205,7 +244,7 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
     echo "Install/Upgrade NVIDIA driver:"
     echo "  1. Check available drivers: ubuntu-drivers devices"
     echo "  2. Install recommended:    sudo ubuntu-drivers install"
-    echo "  3. Or install specific:    sudo ubuntu-drivers install nvidia:550"
+    echo "  3. Or install specific:    sudo ubuntu-drivers install nvidia:590"
     echo "  4. Reboot:                 sudo reboot"
     echo ""
     echo "Reference: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/"

@@ -24,4 +24,5 @@ setup(
         "unitree": [f"unitree_sdk2 @ {unitree_url}"],
         "booster": [f"booster_robotics_sdk @ {booster_url}"],
     },
+    # Entry points are declared in pyproject.toml [project.entry-points.*]
 )
